@@ -448,20 +448,106 @@ class DataManager:
             raise e
     
     def _get_credentials(self) -> Dict[str, Any]:
-        """Get Google Sheets credentials from various sources"""
-        if "gcp_service_account" in st.secrets:
-            return st.secrets["gcp_service_account"]
-        elif "credentials_json" in st.secrets:
-            if isinstance(st.secrets["credentials_json"], dict):
-                return st.secrets["credentials_json"]
-            else:
-                return json.loads(st.secrets["credentials_json"])
-        else:
+        """Get Google Sheets credentials from various sources - UPDATED FOR RENDER"""
+        
+        # Method 1: Try Streamlit secrets (untuk local development)
+        try:
+            if hasattr(st, 'secrets') and st.secrets:
+                if "gcp_service_account" in st.secrets:
+                    print("✅ Using Streamlit gcp_service_account secrets")
+                    return dict(st.secrets["gcp_service_account"])
+                elif "credentials_json" in st.secrets:
+                    print("✅ Using Streamlit credentials_json secrets")
+                    if isinstance(st.secrets["credentials_json"], dict):
+                        return dict(st.secrets["credentials_json"])
+                    else:
+                        return json.loads(st.secrets["credentials_json"])
+        except Exception as e:
+            print(f"Streamlit secrets not available: {e}")
+        
+        # Method 2: Try CREDENTIALS_JSON environment variable 
+        try:
             credentials_json_str = os.environ.get("CREDENTIALS_JSON")
             if credentials_json_str:
+                print("✅ Using CREDENTIALS_JSON environment variable")
                 return json.loads(credentials_json_str)
+        except Exception as e:
+            print(f"CREDENTIALS_JSON parsing error: {e}")
+        
+        # Method 3: Try individual environment variables (RENDER SETUP)
+        try:
+            # Ambil variables dari environment (sesuai yang Anda set di Render)
+            private_key = os.environ.get("private_key")
+            client_email = os.environ.get("client_email") 
+            project_id = os.environ.get("project_id")
+            client_id = os.environ.get("client_id")
+            private_key_id = os.environ.get("private_key_id")
+            auth_provider_x509_cert_url = os.environ.get("auth_provider_x509_cert_url")
+            client_x509_cert_url = os.environ.get("client_x509_cert_url")
+            auth_uri = os.environ.get("auth_uri")
+            token_uri = os.environ.get("token_uri")
+            
+            # Debug: print available env vars (temporary)
+            print("🔍 Debug - Checking environment variables:")
+            print(f"  private_key: {'✅ SET' if private_key else '❌ NOT SET'}")
+            print(f"  client_email: {'✅ SET' if client_email else '❌ NOT SET'}")
+            print(f"  project_id: {'✅ SET' if project_id else '❌ NOT SET'}")
+            print(f"  client_id: {'✅ SET' if client_id else '❌ NOT SET'}")
+            print(f"  private_key_id: {'✅ SET' if private_key_id else '❌ NOT SET'}")
+            
+            # Check required fields
+            if private_key and client_email and project_id:
+                print("✅ Found required credentials in environment variables")
+                
+                # Fix private key formatting
+                if not private_key.startswith("-----BEGIN"):
+                    private_key = f"-----BEGIN PRIVATE KEY-----\n{private_key}\n-----END PRIVATE KEY-----\n"
+                
+                # Replace escaped newlines with actual newlines
+                private_key = private_key.replace("\\n", "\n")
+                
+                credentials = {
+                    "type": "service_account",
+                    "project_id": project_id,
+                    "private_key_id": private_key_id or "",
+                    "private_key": private_key,
+                    "client_email": client_email,
+                    "client_id": client_id or "",
+                    "auth_uri": auth_uri or "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": token_uri or "https://oauth2.googleapis.com/token", 
+                    "auth_provider_x509_cert_url": auth_provider_x509_cert_url or "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_x509_cert_url": client_x509_cert_url or ""
+                }
+                
+                print("✅ Successfully constructed credentials from environment variables")
+                return credentials
             else:
-                raise ValueError("Google Sheets credentials not found")
+                print(f"❌ Missing required credentials:")
+                print(f"  private_key: {'✅' if private_key else '❌'}")
+                print(f"  client_email: {'✅' if client_email else '❌'}")
+                print(f"  project_id: {'✅' if project_id else '❌'}")
+                
+        except Exception as e:
+            print(f"Environment variables error: {e}")
+        
+        # If all methods fail
+        available_env_vars = [key for key in os.environ.keys() if any(keyword in key.lower() for keyword in ['private', 'client', 'project', 'auth', 'key'])]
+        
+        raise ValueError(f"""
+        ❌ Google Sheets credentials not found!
+        
+        Debug Info:
+        - Streamlit secrets: Not available in production
+        - CREDENTIALS_JSON env var: {'SET' if os.environ.get('CREDENTIALS_JSON') else 'NOT SET'}
+        - Individual env vars:
+          * private_key: {'SET' if os.environ.get('private_key') else 'NOT SET'}
+          * client_email: {'SET' if os.environ.get('client_email') else 'NOT SET'}
+          * project_id: {'SET' if os.environ.get('project_id') else 'NOT SET'}
+        
+        Available env vars with keywords: {available_env_vars}
+        
+        Please check your Render environment variables configuration.
+        """)
     
     def get_sheet_data(self) -> Optional[pd.DataFrame]:
         """Get all data from Google Sheets and convert to DataFrame"""
