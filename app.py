@@ -12,11 +12,22 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+# ==================== HELPER FUNCTIONS ====================
+def get_secret(key, default=None):
+    """Prefer ENV (Render), then st.secrets (local), else default."""
+    v = os.getenv(key)
+    if v is not None:
+        return v
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
 # ==================== CONFIGURATION ====================
 class Config:
     """Central configuration class"""
-    SPREADSHEET_ID = "1g3XL1EllHoWV3jhmi7gT3at6MtCNTJBo8DQ1WyWhMEo"
-    SHEET_NAME = "Sheet1"
+    SPREADSHEET_ID = get_secret("SPREADSHEET_ID", "1g3XL1EllHoWV3jhmi7gT3at6MtCNTJBo8DQ1WyWhMEo")
+    SHEET_NAME = get_secret("SHEET_NAME", "Sheet1")
     
     # Binance Color Scheme - Enhanced for better readability
     COLORS = {
@@ -448,106 +459,64 @@ class DataManager:
             raise e
     
     def _get_credentials(self) -> Dict[str, Any]:
-        """Get Google Sheets credentials from various sources - UPDATED FOR RENDER"""
-        
-        # Method 1: Try Streamlit secrets (untuk local development)
+        """Get Google Sheets credentials – prefer ENV on Render, fallback to st.secrets locally."""
+
+        # 1) Single JSON in ENV (recommended on Render)
+        cj = get_secret("CREDENTIALS_JSON")
+        if cj:
+            print("✅ Using CREDENTIALS_JSON environment variable")
+            # Hapus quote pembungkus jika ada
+            cj = cj.strip().strip("'").strip('"')
+            return json.loads(cj)
+
+        # 2) Compose from split ENV vars (nama lowercase seperti di Render)
+        fields = [
+            "type","project_id","private_key_id","private_key","client_email","client_id",
+            "auth_uri","token_uri","auth_provider_x509_cert_url","client_x509_cert_url","universe_domain"
+        ]
+        data = {k: get_secret(k) for k in fields}
+
+        # Normalisasi private_key (ubah \n menjadi newline asli)
+        pk = data.get("private_key")
+        if pk:
+            print("✅ Found private_key in environment variables")
+            # Jika Render menyimpan \n literal, ini akan menjadi baris sebenarnya
+            data["private_key"] = pk.replace("\\n", "\n").strip()
+
+            # Jangan karang header/footer—cukup validasi ada BEGIN/END
+            if "BEGIN PRIVATE KEY" not in data["private_key"] or "END PRIVATE KEY" not in data["private_key"]:
+                raise ValueError("Service account private_key missing BEGIN/END headers.")
+
+        # Set default values for missing optional fields
+        data["type"] = data.get("type") or "service_account"
+        data["auth_uri"] = data.get("auth_uri") or "https://accounts.google.com/o/oauth2/auth"
+        data["token_uri"] = data.get("token_uri") or "https://oauth2.googleapis.com/token"
+        data["auth_provider_x509_cert_url"] = data.get("auth_provider_x509_cert_url") or "https://www.googleapis.com/oauth2/v1/certs"
+
+        required = ["type","project_id","private_key","client_email","token_uri"]
+        if all(data.get(k) for k in required):
+            print("✅ Successfully constructed credentials from individual environment variables")
+            # Filter out None values
+            return {k: v for k, v in data.items() if v is not None}
+
+        # 3) Fallback untuk lokal: st.secrets (jangan disentuh di Render)
         try:
-            if hasattr(st, 'secrets') and st.secrets:
-                if "gcp_service_account" in st.secrets:
-                    print("✅ Using Streamlit gcp_service_account secrets")
-                    return dict(st.secrets["gcp_service_account"])
-                elif "credentials_json" in st.secrets:
-                    print("✅ Using Streamlit credentials_json secrets")
-                    if isinstance(st.secrets["credentials_json"], dict):
-                        return dict(st.secrets["credentials_json"])
-                    else:
-                        return json.loads(st.secrets["credentials_json"])
+            if "gcp_service_account" in st.secrets:
+                print("✅ Using Streamlit gcp_service_account secrets")
+                v = st.secrets["gcp_service_account"]
+                return dict(v)
+            if "credentials_json" in st.secrets:
+                print("✅ Using Streamlit credentials_json secrets")
+                v = st.secrets["credentials_json"]
+                return v if isinstance(v, dict) else json.loads(v)
         except Exception as e:
             print(f"Streamlit secrets not available: {e}")
+
+        # Debug info
+        available_env_vars = [k for k in fields if get_secret(k)]
+        print(f"Available environment variables: {available_env_vars}")
         
-        # Method 2: Try CREDENTIALS_JSON environment variable 
-        try:
-            credentials_json_str = os.environ.get("CREDENTIALS_JSON")
-            if credentials_json_str:
-                print("✅ Using CREDENTIALS_JSON environment variable")
-                return json.loads(credentials_json_str)
-        except Exception as e:
-            print(f"CREDENTIALS_JSON parsing error: {e}")
-        
-        # Method 3: Try individual environment variables (RENDER SETUP)
-        try:
-            # Ambil variables dari environment (sesuai yang Anda set di Render)
-            private_key = os.environ.get("private_key")
-            client_email = os.environ.get("client_email") 
-            project_id = os.environ.get("project_id")
-            client_id = os.environ.get("client_id")
-            private_key_id = os.environ.get("private_key_id")
-            auth_provider_x509_cert_url = os.environ.get("auth_provider_x509_cert_url")
-            client_x509_cert_url = os.environ.get("client_x509_cert_url")
-            auth_uri = os.environ.get("auth_uri")
-            token_uri = os.environ.get("token_uri")
-            
-            # Debug: print available env vars (temporary)
-            print("🔍 Debug - Checking environment variables:")
-            print(f"  private_key: {'✅ SET' if private_key else '❌ NOT SET'}")
-            print(f"  client_email: {'✅ SET' if client_email else '❌ NOT SET'}")
-            print(f"  project_id: {'✅ SET' if project_id else '❌ NOT SET'}")
-            print(f"  client_id: {'✅ SET' if client_id else '❌ NOT SET'}")
-            print(f"  private_key_id: {'✅ SET' if private_key_id else '❌ NOT SET'}")
-            
-            # Check required fields
-            if private_key and client_email and project_id:
-                print("✅ Found required credentials in environment variables")
-                
-                # Fix private key formatting
-                if not private_key.startswith("-----BEGIN"):
-                    private_key = f"-----BEGIN PRIVATE KEY-----\n{private_key}\n-----END PRIVATE KEY-----\n"
-                
-                # Replace escaped newlines with actual newlines
-                private_key = private_key.replace("\\n", "\n")
-                
-                credentials = {
-                    "type": "service_account",
-                    "project_id": project_id,
-                    "private_key_id": private_key_id or "",
-                    "private_key": private_key,
-                    "client_email": client_email,
-                    "client_id": client_id or "",
-                    "auth_uri": auth_uri or "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": token_uri or "https://oauth2.googleapis.com/token", 
-                    "auth_provider_x509_cert_url": auth_provider_x509_cert_url or "https://www.googleapis.com/oauth2/v1/certs",
-                    "client_x509_cert_url": client_x509_cert_url or ""
-                }
-                
-                print("✅ Successfully constructed credentials from environment variables")
-                return credentials
-            else:
-                print(f"❌ Missing required credentials:")
-                print(f"  private_key: {'✅' if private_key else '❌'}")
-                print(f"  client_email: {'✅' if client_email else '❌'}")
-                print(f"  project_id: {'✅' if project_id else '❌'}")
-                
-        except Exception as e:
-            print(f"Environment variables error: {e}")
-        
-        # If all methods fail
-        available_env_vars = [key for key in os.environ.keys() if any(keyword in key.lower() for keyword in ['private', 'client', 'project', 'auth', 'key'])]
-        
-        raise ValueError(f"""
-        ❌ Google Sheets credentials not found!
-        
-        Debug Info:
-        - Streamlit secrets: Not available in production
-        - CREDENTIALS_JSON env var: {'SET' if os.environ.get('CREDENTIALS_JSON') else 'NOT SET'}
-        - Individual env vars:
-          * private_key: {'SET' if os.environ.get('private_key') else 'NOT SET'}
-          * client_email: {'SET' if os.environ.get('client_email') else 'NOT SET'}
-          * project_id: {'SET' if os.environ.get('project_id') else 'NOT SET'}
-        
-        Available env vars with keywords: {available_env_vars}
-        
-        Please check your Render environment variables configuration.
-        """)
+        raise ValueError("Google Sheets credentials not found (ENV or secrets).")
     
     def get_sheet_data(self) -> Optional[pd.DataFrame]:
         """Get all data from Google Sheets and convert to DataFrame"""
